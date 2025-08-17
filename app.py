@@ -110,9 +110,9 @@ class ResumeParser:
         try:
             self.nlp = spacy.load("en_core_web_sm")
         except OSError:
-            print("Warning: spaCy English model not found. Installing...")
-            os.system("python -m spacy download en_core_web_sm")
-            self.nlp = spacy.load("en_core_web_sm")
+            print("Warning: spaCy English model not found. Using basic tokenization...")
+            # Fallback to basic text processing if spaCy model not available
+            self.nlp = None
 
         # Comprehensive skill keywords dictionary
         self.skill_keywords = {
