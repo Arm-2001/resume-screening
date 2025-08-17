@@ -10,145 +10,273 @@ from datetime import datetime
 import uuid
 from pathlib import Path
 from typing import List, Dict, Tuple, Any
+import io
 import tempfile
-import shutil
+import base64
 
 # Document processing
 import PyPDF2
 from docx import Document
-import io
 
 # NLP and ML
 from transformers import AutoTokenizer, AutoModel
 from sentence_transformers import SentenceTransformer
-import spacy
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
-
-# Environment variables
-from dotenv import load_dotenv
-load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# Global variables for system components
-job_system = None
-resume_parser = None
-ai_scorer = None
-screening_system = None
-
-class JobPostingSystem:
-    def __init__(self):
-        self.current_job = None
-        self.job_id = None
-        self.jobs_storage = {}
-
-    def create_job_posting(self, job_data):
-        """Create a structured job posting"""
-        try:
-            # Generate unique job ID
-            self.job_id = str(uuid.uuid4())[:8]
-
-            # Create job posting structure
-            job_posting = {
-                "job_id": self.job_id,
-                "created_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "company_info": {
-                    "company_name": job_data.get('company_name'),
-                    "location": job_data.get('location')
-                },
-                "job_details": {
-                    "job_title": job_data.get('job_title'),
-                    "department": job_data.get('department'),
-                    "employment_type": job_data.get('employment_type'),
-                    "experience_level": job_data.get('experience_level'),
-                    "salary_range": job_data.get('salary_range')
-                },
-                "requirements": {
-                    "essential_skills": [skill.strip() for skill in job_data.get('essential_skills', '').split(',') if skill.strip()],
-                    "preferred_skills": [skill.strip() for skill in job_data.get('preferred_skills', '').split(',') if skill.strip()],
-                    "minimum_experience": job_data.get('minimum_experience', 0),
-                    "education_requirements": job_data.get('education_requirements'),
-                    "job_description": job_data.get('job_description')
-                },
-                "scoring_weights": {
-                    "essential_skills": 0.5,
-                    "preferred_skills": 0.2,
-                    "experience": 0.2,
-                    "education": 0.1
-                }
-            }
-
-            # Store job posting
-            self.current_job = job_posting
-            self.jobs_storage[self.job_id] = job_posting
-
-            return {
-                "success": True,
-                "job_id": self.job_id,
-                "message": f"Job posting created successfully! Job ID: {self.job_id}"
-            }
-
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e)
-            }
-
-    def get_current_job(self):
-        """Get current job posting details"""
-        return self.current_job
-
-    def get_job_by_id(self, job_id):
-        """Get job posting by ID"""
-        return self.jobs_storage.get(job_id)
+# Global variables for storing data
+current_job = None
+uploaded_resumes = []
+processed_results = []
 
 class ResumeParser:
     def __init__(self):
-        # Load NLP model
-        try:
-            self.nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            print("Warning: spaCy English model not found. Using basic tokenization...")
-            # Fallback to basic text processing if spaCy model not available
-            self.nlp = None
-
         # Comprehensive skill keywords dictionary
         self.skill_keywords = {
+            # Programming Languages
             'python': [
-                'python', 'python programming', 'python development', 'django', 'flask', 
-                'fastapi', 'streamlit', 'pandas', 'numpy', 'scipy', 'matplotlib', 'jupyter'
+                'python', 'python programming', 'python development', 'python scripting', 'python 3', 'python 2',
+                'django', 'flask', 'fastapi', 'streamlit', 'jupyter', 'ipython', 'anaconda',
+                'pip', 'conda', 'virtualenv', 'pytest', 'unittest', 'pylint', 'black', 'flake8'
             ],
             'javascript': [
-                'javascript', 'js', 'typescript', 'node.js', 'nodejs', 'react', 'reactjs', 
-                'vue', 'vuejs', 'angular', 'jquery', 'npm', 'webpack'
+                'javascript', 'js', 'ecmascript', 'es6', 'es2015', 'es2020', 'typescript', 'ts',
+                'node.js', 'nodejs', 'express', 'react', 'reactjs', 'vue', 'vuejs', 'angular',
+                'jquery', 'npm', 'yarn', 'webpack', 'babel', 'eslint', 'jest', 'mocha'
             ],
             'java': [
-                'java', 'java programming', 'spring', 'spring boot', 'hibernate', 
-                'maven', 'gradle', 'junit'
+                'java', 'java programming', 'java development', 'java 8', 'java 11', 'java 17',
+                'spring', 'spring boot', 'hibernate', 'maven', 'gradle', 'junit', 'mockito',
+                'jsp', 'servlet', 'struts', 'jdbc', 'jpa', 'ejb', 'jsf'
             ],
+            'cpp': [
+                'c++', 'cpp', 'c plus plus', 'c++ programming', 'c++ development',
+                'stl', 'boost', 'cmake', 'make', 'gcc', 'clang', 'visual studio', 'qt'
+            ],
+            'c_language': [
+                'c programming', 'c language', 'ansi c', 'iso c', 'embedded c',
+                'gcc', 'clang', 'make', 'cmake', 'gdb', 'valgrind'
+            ],
+            'csharp': [
+                'c#', 'csharp', 'c sharp', '.net', 'dotnet', 'asp.net', 'entity framework',
+                'xamarin', 'blazor', 'wpf', 'winforms', 'unity', 'visual studio'
+            ],
+            'other_languages': [
+                'go', 'golang', 'rust', 'kotlin', 'swift', 'php', 'ruby', 'perl', 'lua',
+                'scala', 'clojure', 'haskell', 'erlang', 'elixir', 'dart', 'flutter',
+                'r programming', 'matlab', 'octave', 'julia', 'fortran', 'cobol'
+            ],
+            # Machine Learning & AI
             'machine_learning': [
-                'machine learning', 'ml', 'artificial intelligence', 'ai', 'deep learning',
-                'neural networks', 'tensorflow', 'pytorch', 'scikit-learn', 'sklearn'
+                'machine learning', 'ml', 'artificial intelligence', 'ai', 'predictive modeling',
+                'supervised learning', 'unsupervised learning', 'reinforcement learning',
+                'classification', 'regression', 'clustering', 'dimensionality reduction',
+                'feature engineering', 'feature selection', 'model training', 'model validation',
+                'cross validation', 'hyperparameter tuning', 'ensemble methods', 'bagging',
+                'boosting', 'random forest', 'gradient boosting', 'xgboost', 'lightgbm',
+                'support vector machine', 'svm', 'decision trees', 'naive bayes',
+                'k-means', 'hierarchical clustering', 'dbscan', 'pca', 'lda'
             ],
-            'databases': [
-                'sql', 'mysql', 'postgresql', 'mongodb', 'redis', 'elasticsearch',
-                'database', 'nosql'
+            'deep_learning': [
+                'deep learning', 'neural networks', 'artificial neural networks', 'ann',
+                'convolutional neural networks', 'cnn', 'recurrent neural networks', 'rnn',
+                'lstm', 'gru', 'transformer', 'attention mechanism', 'self-attention',
+                'encoder-decoder', 'autoencoder', 'variational autoencoder', 'vae',
+                'generative adversarial networks', 'gan', 'discriminator', 'generator',
+                'backpropagation', 'gradient descent', 'adam optimizer', 'sgd',
+                'batch normalization', 'dropout', 'regularization', 'activation functions',
+                'relu', 'sigmoid', 'tanh', 'softmax', 'loss functions', 'cross entropy'
             ],
-            'cloud': [
-                'aws', 'azure', 'gcp', 'google cloud', 'docker', 'kubernetes',
-                'cloud computing', 'serverless'
+            'computer_vision': [
+                'computer vision', 'cv', 'image processing', 'image recognition',
+                'object detection', 'object recognition', 'face recognition', 'face detection',
+                'optical character recognition', 'ocr', 'image segmentation', 'semantic segmentation',
+                'instance segmentation', 'edge detection', 'feature extraction', 'sift', 'surf',
+                'yolo', 'rcnn', 'faster rcnn', 'mask rcnn', 'u-net', 'resnet', 'vgg',
+                'inception', 'mobilenet', 'efficientnet', 'opencv', 'pillow', 'skimage',
+                'image classification', 'medical imaging', 'satellite imagery', 'video analysis'
             ],
-            'web_dev': [
-                'html', 'css', 'frontend', 'backend', 'full-stack', 'rest api',
-                'graphql', 'microservices'
+            'nlp': [
+                'natural language processing', 'nlp', 'text processing', 'text mining',
+                'text analysis', 'sentiment analysis', 'named entity recognition', 'ner',
+                'part of speech tagging', 'pos tagging', 'tokenization', 'stemming',
+                'lemmatization', 'word embeddings', 'word2vec', 'glove', 'fasttext',
+                'tf-idf', 'bag of words', 'n-grams', 'language modeling', 'text classification',
+                'document classification', 'topic modeling', 'lda', 'bert', 'gpt', 'transformer',
+                'attention', 'seq2seq', 'machine translation', 'text summarization',
+                'question answering', 'chatbots', 'dialogue systems', 'speech recognition',
+                'text to speech', 'nltk', 'hugging face', 'transformers'
             ],
-            'devops': [
-                'devops', 'ci/cd', 'jenkins', 'git', 'github', 'docker',
-                'kubernetes', 'terraform'
+            'llm': [
+                'large language models', 'llm', 'gpt', 'gpt-3', 'gpt-4', 'chatgpt',
+                'bert', 'roberta', 'distilbert', 'electra', 'albert', 't5', 'bart',
+                'xlnet', 'ernie', 'deberta', 'claude', 'palm', 'llama', 'alpaca',
+                'fine-tuning', 'prompt engineering', 'few-shot learning', 'zero-shot learning',
+                'in-context learning', 'retrieval augmented generation', 'rag',
+                'langchain', 'llamaindex', 'vector databases', 'embeddings', 'semantic search',
+                'openai api', 'hugging face', 'transformers library'
+            ],
+            # ML/DL Frameworks & Libraries
+            'tensorflow': [
+                'tensorflow', 'tf', 'tensorflow 2', 'tensorflow.js', 'tensorflow lite',
+                'tensorflow serving', 'tensorboard', 'keras', 'tf.keras', 'estimator'
+            ],
+            'pytorch': [
+                'pytorch', 'torch', 'torchvision', 'torchaudio', 'torchtext',
+                'pytorch lightning', 'fastai', 'ignite'
+            ],
+            'ml_libraries': [
+                'scikit-learn', 'sklearn', 'pandas', 'numpy', 'scipy', 'matplotlib',
+                'seaborn', 'plotly', 'xgboost', 'lightgbm', 'catboost', 'optuna',
+                'hyperopt', 'mlflow', 'wandb', 'weights and biases', 'tensorboard',
+                'jupyter notebook', 'colab', 'kaggle'
+            ],
+            # Data Science & Analytics
+            'data_science': [
+                'data science', 'data scientist', 'data analysis', 'data analytics',
+                'statistical analysis', 'descriptive statistics', 'inferential statistics',
+                'hypothesis testing', 'a/b testing', 'experimental design', 'causal inference',
+                'time series analysis', 'forecasting', 'regression analysis', 'correlation',
+                'data visualization', 'exploratory data analysis', 'eda', 'data mining',
+                'business intelligence', 'bi', 'kpi', 'metrics', 'dashboard'
+            ],
+            'big_data': [
+                'big data', 'hadoop', 'hdfs', 'mapreduce', 'yarn', 'hive', 'pig',
+                'spark', 'apache spark', 'pyspark', 'scala spark', 'spark sql',
+                'kafka', 'storm', 'flink', 'elasticsearch', 'solr', 'cassandra',
+                'hbase', 'mongodb', 'redis', 'memcached', 'etl', 'data pipeline',
+                'data warehouse', 'data lake', 'olap', 'oltp'
+            ],
+            # Databases
+            'sql_databases': [
+                'sql', 'mysql', 'postgresql', 'postgres', 'sqlite', 'oracle',
+                'sql server', 'mariadb', 'db2', 'sybase', 'stored procedures',
+                'triggers', 'views', 'indexes', 'normalization', 'acid properties',
+                'transactions', 'joins', 'subqueries', 'cte', 'window functions'
+            ],
+            'nosql_databases': [
+                'nosql', 'mongodb', 'cassandra', 'redis', 'elasticsearch', 'couchdb',
+                'dynamodb', 'neo4j', 'graph database', 'document database',
+                'key-value store', 'column family', 'time series database',
+                'influxdb', 'prometheus'
+            ],
+            # Cloud Computing
+            'aws': [
+                'aws', 'amazon web services', 'ec2', 's3', 'rds', 'lambda',
+                'cloudformation', 'cloudwatch', 'iam', 'vpc', 'route53',
+                'elb', 'auto scaling', 'sqs', 'sns', 'api gateway',
+                'cognito', 'dynamo db', 'redshift', 'emr', 'sagemaker'
+            ],
+            'azure': [
+                'azure', 'microsoft azure', 'azure vm', 'azure storage', 'azure sql',
+                'azure functions', 'azure devops', 'azure ad', 'azure ml',
+                'cosmos db', 'service bus', 'azure kubernetes service', 'aks'
+            ],
+            'gcp': [
+                'gcp', 'google cloud platform', 'compute engine', 'cloud storage',
+                'bigquery', 'cloud sql', 'cloud functions', 'app engine',
+                'kubernetes engine', 'gke', 'dataflow', 'pub/sub', 'firebase'
+            ],
+            'cloud_general': [
+                'cloud computing', 'iaas', 'paas', 'saas', 'serverless', 'microservices',
+                'containerization', 'orchestration', 'auto scaling', 'load balancing',
+                'cdn', 'content delivery network'
+            ],
+            # DevOps & Tools
+            'docker': [
+                'docker', 'containerization', 'containers', 'dockerfile', 'docker compose',
+                'docker swarm', 'docker hub', 'container registry'
+            ],
+            'kubernetes': [
+                'kubernetes', 'k8s', 'pods', 'services', 'deployments', 'configmaps',
+                'secrets', 'ingress', 'helm', 'kubectl', 'minikube', 'openshift'
+            ],
+            'ci_cd': [
+                'ci/cd', 'continuous integration', 'continuous deployment', 'jenkins',
+                'gitlab ci', 'github actions', 'azure devops', 'bamboo', 'teamcity',
+                'travis ci', 'circle ci', 'pipeline', 'build automation'
+            ],
+            'version_control': [
+                'git', 'github', 'gitlab', 'bitbucket', 'svn', 'mercurial',
+                'version control', 'source control', 'branching', 'merging',
+                'pull request', 'merge request', 'code review'
+            ],
+            'monitoring': [
+                'monitoring', 'logging', 'observability', 'prometheus', 'grafana',
+                'elk stack', 'elasticsearch', 'logstash', 'kibana', 'splunk',
+                'new relic', 'datadog', 'nagios', 'zabbix'
+            ],
+            # Web Development
+            'frontend': [
+                'frontend', 'front-end', 'html', 'html5', 'css', 'css3', 'sass',
+                'scss', 'less', 'bootstrap', 'tailwind', 'material ui', 'responsive design',
+                'mobile first', 'progressive web app', 'pwa', 'single page application', 'spa',
+                'webpack', 'vite', 'parcel', 'gulp', 'grunt'
+            ],
+            'backend': [
+                'backend', 'back-end', 'server-side', 'api development', 'rest api',
+                'restful services', 'graphql', 'soap', 'microservices', 'monolith',
+                'middleware', 'authentication', 'authorization', 'jwt', 'oauth',
+                'session management', 'caching', 'rate limiting'
+            ],
+            'web_frameworks': [
+                'express.js', 'koa', 'fastify', 'nest.js', 'django', 'flask',
+                'fastapi', 'spring boot', 'asp.net core', 'ruby on rails',
+                'laravel', 'symfony', 'codeigniter', 'cakephp'
+            ],
+            # Mobile Development
+            'mobile': [
+                'mobile development', 'android', 'ios', 'react native', 'flutter',
+                'xamarin', 'ionic', 'cordova', 'phonegap', 'kotlin', 'swift',
+                'objective-c', 'java android', 'android studio', 'xcode'
+            ],
+            # Security
+            'cybersecurity': [
+                'cybersecurity', 'information security', 'network security', 'web security',
+                'application security', 'penetration testing', 'ethical hacking',
+                'vulnerability assessment', 'security audit', 'encryption', 'cryptography',
+                'ssl', 'tls', 'https', 'firewall', 'ids', 'ips', 'siem',
+                'malware analysis', 'forensics', 'incident response', 'risk assessment'
+            ],
+            # Network & Systems
+            'networking': [
+                'networking', 'tcp/ip', 'osi model', 'dns', 'dhcp', 'routing',
+                'switching', 'vlan', 'vpn', 'load balancer', 'proxy', 'cdn',
+                'http', 'https', 'ftp', 'ssh', 'telnet', 'snmp'
+            ],
+            'systems_admin': [
+                'system administration', 'linux', 'unix', 'windows server',
+                'bash', 'shell scripting', 'powershell', 'active directory',
+                'ldap', 'virtualization', 'vmware', 'hyper-v', 'kvm'
+            ],
+            # Testing
+            'testing': [
+                'software testing', 'unit testing', 'integration testing',
+                'system testing', 'acceptance testing', 'manual testing',
+                'automated testing', 'test automation', 'selenium', 'cypress',
+                'jest', 'mocha', 'junit', 'testng', 'pytest', 'cucumber',
+                'performance testing', 'load testing', 'stress testing',
+                'jmeter', 'gatling', 'locust'
+            ],
+            # Project Management & Methodologies
+            'methodologies': [
+                'agile', 'scrum', 'kanban', 'waterfall', 'lean', 'devops',
+                'test driven development', 'tdd', 'behavior driven development', 'bdd',
+                'pair programming', 'code review', 'sprint planning', 'retrospective',
+                'daily standup', 'product owner', 'scrum master'
+            ],
+            'project_management': [
+                'project management', 'pmp', 'jira', 'confluence', 'trello',
+                'asana', 'monday.com', 'notion', 'slack', 'microsoft teams',
+                'zoom', 'requirements gathering', 'stakeholder management'
             ]
         }
+
+        # Education keywords
+        self.education_keywords = ['bachelor', 'master', 'phd', 'diploma', 'certificate', 'degree', 'university', 'college']
 
     def extract_text_from_pdf(self, file_content):
         """Extract text from PDF file content"""
@@ -183,7 +311,7 @@ class ResumeParser:
         elif file_extension == '.docx':
             return self.extract_text_from_docx(file_content)
         elif file_extension == '.txt':
-            return file_content.decode('utf-8') if isinstance(file_content, bytes) else file_content
+            return file_content.decode('utf-8')
         else:
             return "Unsupported file format"
 
@@ -203,8 +331,8 @@ class ResumeParser:
 
         return contact_info
 
-    def extract_skills(self, text):
-        """Extract skills from resume text"""
+    def enhanced_skill_extraction(self, text):
+        """Enhanced skill extraction with better matching"""
         text_lower = text.lower()
         found_skills = {}
         all_skills_found = []
@@ -212,6 +340,7 @@ class ResumeParser:
         for category, skills in self.skill_keywords.items():
             category_skills = []
             for skill in skills:
+                # Use word boundaries for better matching
                 skill_pattern = r'\b' + re.escape(skill.lower()) + r'\b'
                 if re.search(skill_pattern, text_lower):
                     category_skills.append(skill)
@@ -220,7 +349,13 @@ class ResumeParser:
             if category_skills:
                 found_skills[category] = category_skills
 
-        unique_skills = list(dict.fromkeys(all_skills_found))  # Remove duplicates
+        # Remove duplicates while preserving order
+        unique_skills = []
+        seen = set()
+        for skill in all_skills_found:
+            if skill not in seen:
+                unique_skills.append(skill)
+                seen.add(skill)
 
         return {
             'categorized_skills': found_skills,
@@ -229,8 +364,8 @@ class ResumeParser:
             'total_skills_found': len(unique_skills)
         }
 
-    def extract_experience(self, text):
-        """Extract work experience information"""
+    def enhanced_experience_extraction(self, text):
+        """Enhanced experience extraction with better patterns"""
         # Enhanced experience patterns
         experience_patterns = [
             r'(\d+)\+?\s*years?\s*(?:of\s*)?experience',
@@ -246,14 +381,14 @@ class ResumeParser:
             matches = re.findall(pattern, text.lower())
             years_experience.extend([int(match) for match in matches])
 
-        # Extract date ranges
+        # Extract date ranges for experience calculation
         date_patterns = [
-            r'(\d{4})\s*[-–]\s*(\d{4})',
-            r'(\d{4})\s*[-–]\s*present',
-            r'(\d{4})\s*[-–]\s*current'
+            r'(\d{4})\s*[-–]\s*(\d{4})',  # 2020-2024
+            r'(\d{4})\s*[-–]\s*present',   # 2020-present
+            r'(\d{4})\s*[-–]\s*current'    # 2020-current
         ]
 
-        current_year = 2025
+        current_year = 2025  # Update as needed
         calculated_years = []
 
         for pattern in date_patterns:
@@ -266,20 +401,40 @@ class ResumeParser:
                 elif 'present' in text.lower() or 'current' in text.lower():
                     calculated_years.append(current_year - start_year)
 
+        # Combine all experience calculations
         all_experience = years_experience + calculated_years
+
+        # Simple job title extraction without spaCy
+        job_titles = [
+            'engineer', 'developer', 'programmer', 'analyst', 'scientist', 'manager',
+            'lead', 'senior', 'junior', 'intern', 'consultant', 'specialist',
+            'architect', 'designer', 'researcher', 'technician', 'administrator'
+        ]
+
+        positions = []
+        text_lines = text.split('\n')
+        for line in text_lines:
+            line_lower = line.lower().strip()
+            for title in job_titles:
+                if title in line_lower and len(line.strip()) < 100:  # Likely a job title
+                    positions.append(line.strip())
+                    break
 
         return {
             'years_experience': max(all_experience) if all_experience else 0,
-            'all_experience_values': all_experience
+            'all_experience_values': all_experience,
+            'positions': list(set(positions))[:5],  # Top 5 unique positions
+            'experience_calculation_method': 'enhanced_pattern_matching'
         }
 
-    def extract_education(self, text):
-        """Extract education information"""
+    def enhanced_education_extraction(self, text):
+        """Enhanced education extraction with better patterns"""
         text_lower = text.lower()
         education_info = {
             'degrees': [],
             'institutions': [],
-            'fields': []
+            'fields': [],
+            'graduation_years': []
         }
 
         # Enhanced degree patterns
@@ -300,6 +455,29 @@ class ResumeParser:
                 elif isinstance(match, str):
                     education_info['degrees'].append(match)
 
+        # Extract graduation years
+        year_pattern = r'(?:graduated|graduation|completed).*?(\d{4})|(\d{4}).*?(?:graduated|graduation)'
+        year_matches = re.findall(year_pattern, text_lower)
+        for match in year_matches:
+            year = match[0] if match[0] else match[1]
+            if year and 1990 <= int(year) <= 2030:  # Reasonable year range
+                education_info['graduation_years'].append(int(year))
+
+        # Enhanced university/institution extraction
+        university_patterns = [
+            r'([^,\n]+)\s+university',
+            r'([^,\n]+)\s+college',
+            r'([^,\n]+)\s+institute',
+            r'university\s+of\s+([^,\n]+)',
+            r'college\s+of\s+([^,\n]+)'
+        ]
+
+        for pattern in university_patterns:
+            matches = re.findall(pattern, text_lower)
+            for match in matches:
+                if len(match.strip()) > 3:  # Filter out very short matches
+                    education_info['institutions'].append(match.strip().title())
+
         return education_info
 
     def parse_resume(self, file_content, filename):
@@ -312,14 +490,15 @@ class ResumeParser:
                 return {
                     'filename': filename,
                     'error': 'Could not extract text from file',
+                    'raw_text': text[:500] if text else "",
                     'parsing_success': False
                 }
 
-            # Extract all information
+            # Extract all information using enhanced methods
             contact_info = self.extract_contact_info(text)
-            skills_info = self.extract_skills(text)
-            experience_info = self.extract_experience(text)
-            education_info = self.extract_education(text)
+            skills_info = self.enhanced_skill_extraction(text)
+            experience_info = self.enhanced_experience_extraction(text)
+            education_info = self.enhanced_education_extraction(text)
 
             parsed_resume = {
                 'filename': filename,
@@ -327,7 +506,7 @@ class ResumeParser:
                 'skills': skills_info,
                 'experience': experience_info,
                 'education': education_info,
-                'raw_text': text[:1000],
+                'raw_text': text[:1000],  # First 1000 characters for preview
                 'full_text': text,
                 'parsing_success': True,
                 'parsing_stats': {
@@ -351,12 +530,12 @@ class ResumeParser:
 class AIScoring:
     def __init__(self):
         # Load pre-trained sentence transformer for semantic similarity
+        print("Loading AI models...")
         try:
-            print("Loading AI models...")
             self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
             print("✅ AI models loaded successfully!")
         except Exception as e:
-            print(f"Error loading AI models: {e}")
+            print(f"Error loading AI model: {e}")
             self.sentence_model = None
 
     def calculate_skills_match(self, resume_skills, job_essential_skills, job_preferred_skills):
@@ -365,7 +544,7 @@ class AIScoring:
         essential_lower = [skill.lower() for skill in job_essential_skills]
         preferred_lower = [skill.lower() for skill in job_preferred_skills]
 
-        # Essential skills match
+        # Essential skills match (more important)
         essential_matches = 0
         for skill in essential_lower:
             if any(skill in resume_skill or resume_skill in skill for resume_skill in resume_skills_lower):
@@ -381,7 +560,7 @@ class AIScoring:
 
         preferred_score = (preferred_matches / len(preferred_lower)) * 100 if preferred_lower else 0
 
-        # Weighted combination
+        # Weighted combination (essential skills are more important)
         overall_skills_score = (essential_score * 0.7) + (preferred_score * 0.3)
 
         return {
@@ -398,11 +577,13 @@ class AIScoring:
         required_years = float(required_experience) if required_experience else 0
 
         if required_years == 0:
-            return 100
+            return 100  # No experience required
 
         if resume_years >= required_years:
+            # Bonus for exceeding requirements, but cap at 100
             experience_score = min(100, 80 + (resume_years - required_years) * 5)
         else:
+            # Penalty for not meeting requirements
             experience_score = (resume_years / required_years) * 80
 
         return round(experience_score, 1)
@@ -413,35 +594,59 @@ class AIScoring:
             return 100
 
         resume_degrees = [degree.lower() for degree in resume_education.get('degrees', [])]
+        resume_fields = [field.lower() for field in resume_education.get('fields', [])]
+
         job_education_lower = job_education_req.lower()
 
+        # Check for degree level match
         degree_score = 0
         if any(degree in job_education_lower for degree in resume_degrees):
             degree_score = 80
-        elif resume_degrees:
+        elif resume_degrees:  # Has some degree
             degree_score = 60
         else:
             degree_score = 20
 
-        return min(100, round(degree_score, 1))
+        # Check for field relevance
+        field_score = 0
+        relevant_fields = ['computer', 'engineering', 'science', 'technology', 'business', 'mathematics']
+
+        if resume_fields:
+            for field in resume_fields:
+                if any(relevant in field for relevant in relevant_fields):
+                    field_score = 20
+                    break
+            else:
+                field_score = 10
+
+        education_score = degree_score + field_score
+        return min(100, round(education_score, 1))
 
     def calculate_semantic_similarity(self, resume_text, job_description):
         """Calculate semantic similarity between resume and job description"""
-        if not self.sentence_model:
-            return 50
-
         try:
+            if not self.sentence_model:
+                return 50  # Default score if model not loaded
+
+            # Create embeddings
             resume_embedding = self.sentence_model.encode([resume_text])
             job_embedding = self.sentence_model.encode([job_description])
+
+            # Calculate cosine similarity
             similarity = cosine_similarity(resume_embedding, job_embedding)[0][0]
-            return round(similarity * 100, 1)
+
+            # Convert to percentage
+            semantic_score = round(similarity * 100, 1)
+            return semantic_score
+
         except Exception as e:
             print(f"Error in semantic similarity calculation: {e}")
-            return 50
+            return 50  # Default score
 
     def calculate_overall_score(self, parsed_resume, job_posting):
         """Calculate comprehensive matching score"""
         try:
+            # Extract data
             resume_skills = parsed_resume['skills']['all_skills']
             resume_experience = parsed_resume['experience']
             resume_education = parsed_resume['education']
@@ -478,11 +683,12 @@ class AIScoring:
                 skills_match['overall_skills_score'] * job_weights['preferred_skills'] +
                 experience_score * job_weights['experience'] +
                 education_score * job_weights['education'] +
-                semantic_score * 0.1
+                semantic_score * 0.1  # Small weight for semantic similarity
             )
 
             overall_score = round(overall_score, 1)
 
+            # Create detailed scoring breakdown
             detailed_scores = {
                 'overall_score': overall_score,
                 'skills_breakdown': skills_match,
@@ -491,7 +697,7 @@ class AIScoring:
                 'semantic_score': semantic_score,
                 'candidate_name': parsed_resume['filename'],
                 'strengths': self.identify_strengths(skills_match, experience_score, education_score),
-                'gaps': self.identify_gaps(skills_match, experience_score, education_score)
+                'gaps': self.identify_gaps(skills_match, experience_score, education_score, job_requirements)
             }
 
             return detailed_scores
@@ -519,7 +725,7 @@ class AIScoring:
 
         return strengths if strengths else ["Meets basic requirements"]
 
-    def identify_gaps(self, skills_match, experience_score, education_score):
+    def identify_gaps(self, skills_match, experience_score, education_score, job_requirements):
         """Identify candidate gaps"""
         gaps = []
 
@@ -532,59 +738,165 @@ class AIScoring:
 
         return gaps if gaps else ["No significant gaps identified"]
 
-class ResumeScreeningSystem:
-    def __init__(self):
-        self.uploaded_resumes = []
-        self.processed_results = []
+# Initialize instances
+resume_parser = ResumeParser()
+ai_scorer = AIScoring()
 
-    def process_uploaded_files(self, files_data):
-        """Process uploaded resume files"""
-        if not files_data:
-            return {"success": False, "message": "No files uploaded"}
+# API Routes
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'message': 'Smart Resume Screening API',
+        'version': '1.0.0',
+        'status': 'active',
+        'endpoints': {
+            'create_job': '/api/create-job',
+            'upload_resumes': '/api/upload-resumes',
+            'analyze_resumes': '/api/analyze-resumes',
+            'get_results': '/api/get-results'
+        }
+    })
 
-        if not job_system.current_job:
-            return {"success": False, "message": "Please create a job posting first!"}
+@app.route('/api/create-job', methods=['POST'])
+def create_job():
+    """Create a new job posting"""
+    global current_job
+    
+    try:
+        data = request.json
+        
+        # Validate required fields
+        required_fields = ['company_name', 'job_title', 'essential_skills', 'job_description']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'error': f'Missing required field: {field}'}), 400
 
-        self.uploaded_resumes = []
+        # Generate unique job ID
+        job_id = str(uuid.uuid4())[:8]
+
+        # Create job posting structure
+        job_posting = {
+            "job_id": job_id,
+            "created_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "company_info": {
+                "company_name": data.get('company_name'),
+                "location": data.get('location', '')
+            },
+            "job_details": {
+                "job_title": data.get('job_title'),
+                "department": data.get('department', ''),
+                "employment_type": data.get('employment_type', 'Full-time'),
+                "experience_level": data.get('experience_level', 'Mid Level'),
+                "salary_range": data.get('salary_range', '')
+            },
+            "requirements": {
+                "essential_skills": [skill.strip() for skill in data.get('essential_skills', '').split(',') if skill.strip()],
+                "preferred_skills": [skill.strip() for skill in data.get('preferred_skills', '').split(',') if skill.strip()],
+                "minimum_experience": float(data.get('minimum_experience', 0)),
+                "education_requirements": data.get('education_requirements', ''),
+                "job_description": data.get('job_description')
+            },
+            "scoring_weights": {
+                "essential_skills": 0.5,
+                "preferred_skills": 0.2,
+                "experience": 0.2,
+                "education": 0.1
+            }
+        }
+
+        current_job = job_posting
+
+        return jsonify({
+            'success': True,
+            'message': 'Job posting created successfully',
+            'job_id': job_id,
+            'job_title': data.get('job_title'),
+            'company_name': data.get('company_name')
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/upload-resumes', methods=['POST'])
+def upload_resumes():
+    """Upload and process resume files"""
+    global uploaded_resumes
+    
+    try:
+        if not current_job:
+            return jsonify({'error': 'Please create a job posting first'}), 400
+
+        if 'files' not in request.files:
+            return jsonify({'error': 'No files uploaded'}), 400
+
+        files = request.files.getlist('files')
+        uploaded_resumes = []
         results = []
 
-        for file_info in files_data:
-            filename = file_info['filename']
-            file_content = file_info['content']
+        for file in files:
+            if file.filename == '':
+                continue
 
             try:
+                # Read file content
+                file_content = file.read()
+                filename = file.filename
+
+                # Parse resume
                 parsed_resume = resume_parser.parse_resume(file_content, filename)
 
                 if parsed_resume.get('parsing_success', False):
-                    self.uploaded_resumes.append(parsed_resume)
-                    results.append(f"✅ {filename} - Parsed successfully")
+                    uploaded_resumes.append(parsed_resume)
+                    results.append({
+                        'filename': filename,
+                        'status': 'success',
+                        'message': 'Parsed successfully',
+                        'stats': parsed_resume.get('parsing_stats', {})
+                    })
                 else:
-                    results.append(f"❌ {filename} - Failed to parse: {parsed_resume.get('error', 'Unknown error')}")
+                    results.append({
+                        'filename': filename,
+                        'status': 'error',
+                        'message': parsed_resume.get('error', 'Unknown error')
+                    })
 
             except Exception as e:
-                results.append(f"❌ {filename} - Error: {str(e)}")
+                results.append({
+                    'filename': file.filename,
+                    'status': 'error',
+                    'message': str(e)
+                })
 
-        return {
-            "success": True,
-            "message": f"Processed {len(files_data)} files",
-            "results": results,
-            "processed_count": len(self.uploaded_resumes)
-        }
+        return jsonify({
+            'success': True,
+            'message': f'Processed {len(files)} files',
+            'total_uploaded': len(files),
+            'successfully_parsed': len(uploaded_resumes),
+            'results': results
+        })
 
-    def analyze_resumes(self):
-        """Analyze all uploaded resumes against the job posting"""
-        if not self.uploaded_resumes:
-            return {"success": False, "message": "No resumes to analyze"}
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-        if not job_system.current_job:
-            return {"success": False, "message": "No job posting found"}
+@app.route('/api/analyze-resumes', methods=['POST'])
+def analyze_resumes():
+    """Analyze uploaded resumes against job posting"""
+    global processed_results
+    
+    try:
+        if not uploaded_resumes:
+            return jsonify({'error': 'No resumes to analyze'}), 400
+
+        if not current_job:
+            return jsonify({'error': 'No job posting found'}), 400
 
         scored_candidates = []
 
-        for resume in self.uploaded_resumes:
+        for resume in uploaded_resumes:
             if resume.get('parsing_success', False):
                 try:
-                    score_result = ai_scorer.calculate_overall_score(resume, job_system.current_job)
+                    # Calculate AI score
+                    score_result = ai_scorer.calculate_overall_score(resume, current_job)
                     scored_candidates.append(score_result)
                 except Exception as e:
                     print(f"Error scoring {resume['filename']}: {e}")
@@ -592,109 +904,130 @@ class ResumeScreeningSystem:
         # Sort by overall score (descending)
         scored_candidates.sort(key=lambda x: x.get('overall_score', 0), reverse=True)
 
-        self.processed_results = scored_candidates
+        # Store results
+        processed_results = scored_candidates
 
-        return {
-            "success": True,
-            "candidates": scored_candidates,
-            "total_candidates": len(scored_candidates),
-            "job_info": {
-                "title": job_system.current_job['job_details']['job_title'],
-                "company": job_system.current_job['company_info']['company_name']
-            }
+        return jsonify({
+            'success': True,
+            'message': 'Analysis completed',
+            'total_candidates': len(scored_candidates),
+            'job_title': current_job['job_details']['job_title'],
+            'company_name': current_job['company_info']['company_name'],
+            'top_candidates': scored_candidates[:10]  # Return top 10
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/get-results', methods=['GET'])
+def get_results():
+    """Get detailed analysis results"""
+    try:
+        if not processed_results:
+            return jsonify({'error': 'No analysis results available'}), 400
+
+        if not current_job:
+            return jsonify({'error': 'No job posting found'}), 400
+
+        # Prepare summary statistics
+        total_candidates = len(processed_results)
+        high_scorers = len([c for c in processed_results if c.get('overall_score', 0) >= 80])
+        medium_scorers = len([c for c in processed_results if 60 <= c.get('overall_score', 0) < 80])
+        low_scorers = len([c for c in processed_results if c.get('overall_score', 0) < 60])
+
+        return jsonify({
+            'success': True,
+            'job_info': {
+                'job_title': current_job['job_details']['job_title'],
+                'company_name': current_job['company_info']['company_name'],
+                'job_id': current_job['job_id']
+            },
+            'summary': {
+                'total_candidates': total_candidates,
+                'high_scorers': high_scorers,
+                'medium_scorers': medium_scorers,
+                'low_scorers': low_scorers
+            },
+            'detailed_results': processed_results,
+            'top_10': processed_results[:10]
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/candidate/<int:index>', methods=['GET'])
+def get_candidate_details(index):
+    """Get detailed information for a specific candidate"""
+    try:
+        if not processed_results or index >= len(processed_results):
+            return jsonify({'error': 'Candidate not found'}), 404
+
+        candidate = processed_results[index]
+        
+        # Find the original resume data
+        original_resume = None
+        for resume in uploaded_resumes:
+            if resume['filename'] == candidate['candidate_name']:
+                original_resume = resume
+                break
+
+        result = {
+            'candidate_info': candidate,
+            'resume_details': original_resume,
+            'rank': index + 1,
+            'total_candidates': len(processed_results)
         }
 
-# Initialize system components
-def initialize_system():
-    global job_system, resume_parser, ai_scorer, screening_system
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/job-info', methods=['GET'])
+def get_job_info():
+    """Get current job posting information"""
+    try:
+        if not current_job:
+            return jsonify({'error': 'No job posting found'}), 404
+
+        return jsonify({
+            'success': True,
+            'job_posting': current_job
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/reset', methods=['POST'])
+def reset_system():
+    """Reset the system (clear all data)"""
+    global current_job, uploaded_resumes, processed_results
     
-    print("Initializing Resume Screening System...")
-    job_system = JobPostingSystem()
-    resume_parser = ResumeParser()
-    ai_scorer = AIScoring()
-    screening_system = ResumeScreeningSystem()
-    print("✅ System initialized successfully!")
+    try:
+        current_job = None
+        uploaded_resumes = []
+        processed_results = []
 
-# API Routes
-@app.route('/', methods=['GET'])
+        return jsonify({
+            'success': True,
+            'message': 'System reset successfully'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/health', methods=['GET'])
 def health_check():
+    """Health check endpoint"""
     return jsonify({
-        "status": "healthy",
-        "message": "Resume Screening API is running",
-        "version": "1.0.0"
-    })
-
-@app.route('/api/create-job', methods=['POST'])
-def create_job():
-    try:
-        job_data = request.json
-        result = job_system.create_job_posting(job_data)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/get-job/<job_id>', methods=['GET'])
-def get_job(job_id):
-    try:
-        job = job_system.get_job_by_id(job_id)
-        if job:
-            return jsonify({"success": True, "job": job})
-        else:
-            return jsonify({"success": False, "message": "Job not found"}), 404
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/current-job', methods=['GET'])
-def get_current_job():
-    try:
-        job = job_system.get_current_job()
-        if job:
-            return jsonify({"success": True, "job": job})
-        else:
-            return jsonify({"success": False, "message": "No current job posting"}), 404
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/upload-resumes', methods=['POST'])
-def upload_resumes():
-    try:
-        if 'files' not in request.files:
-            return jsonify({"success": False, "message": "No files uploaded"}), 400
-
-        files = request.files.getlist('files')
-        files_data = []
-
-        for file in files:
-            if file.filename:
-                files_data.append({
-                    'filename': file.filename,
-                    'content': file.read()
-                })
-
-        result = screening_system.process_uploaded_files(files_data)
-        return jsonify(result)
-
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/analyze-resumes', methods=['POST'])
-def analyze_resumes():
-    try:
-        result = screening_system.analyze_resumes()
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/system-info', methods=['GET'])
-def system_info():
-    return jsonify({
-        "skill_categories": len(resume_parser.skill_keywords) if resume_parser else 0,
-        "total_skills": sum(len(skills) for skills in resume_parser.skill_keywords.values()) if resume_parser else 0,
-        "models_loaded": ai_scorer.sentence_model is not None if ai_scorer else False,
-        "current_job_exists": job_system.current_job is not None if job_system else False
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'ai_model_loaded': ai_scorer.sentence_model is not None,
+        'active_job': current_job is not None,
+        'uploaded_resumes': len(uploaded_resumes),
+        'processed_results': len(processed_results)
     })
 
 if __name__ == '__main__':
-    initialize_system()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
