@@ -13,6 +13,7 @@ from typing import List, Dict, Tuple, Any
 import io
 import tempfile
 import base64
+import logging
 
 # Document processing
 import PyPDF2
@@ -23,6 +24,10 @@ from transformers import AutoTokenizer, AutoModel
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
@@ -287,7 +292,7 @@ class ResumeParser:
                 text += page.extract_text()
             return text
         except Exception as e:
-            print(f"Error reading PDF: {e}")
+            logger.error(f"Error reading PDF: {e}")
             return ""
 
     def extract_text_from_docx(self, file_content):
@@ -299,7 +304,7 @@ class ResumeParser:
                 text += paragraph.text + "\n"
             return text
         except Exception as e:
-            print(f"Error reading DOCX: {e}")
+            logger.error(f"Error reading DOCX: {e}")
             return ""
 
     def extract_text_from_file(self, file_content, filename):
@@ -311,7 +316,13 @@ class ResumeParser:
         elif file_extension == '.docx':
             return self.extract_text_from_docx(file_content)
         elif file_extension == '.txt':
-            return file_content.decode('utf-8')
+            try:
+                return file_content.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    return file_content.decode('latin-1')
+                except:
+                    return file_content.decode('utf-8', errors='ignore')
         else:
             return "Unsupported file format"
 
@@ -521,6 +532,7 @@ class ResumeParser:
             return parsed_resume
 
         except Exception as e:
+            logger.error(f"Parsing error for {filename}: {e}")
             return {
                 'filename': filename,
                 'error': f'Parsing error: {str(e)}',
@@ -530,12 +542,13 @@ class ResumeParser:
 class AIScoring:
     def __init__(self):
         # Load pre-trained sentence transformer for semantic similarity
-        print("Loading AI models...")
+        logger.info("Loading AI models...")
         try:
+            # Use a smaller model for better performance in resource-constrained environments
             self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-            print("✅ AI models loaded successfully!")
+            logger.info("✅ AI models loaded successfully!")
         except Exception as e:
-            print(f"Error loading AI model: {e}")
+            logger.error(f"Error loading AI model: {e}")
             self.sentence_model = None
 
     def calculate_skills_match(self, resume_skills, job_essential_skills, job_preferred_skills):
@@ -628,6 +641,10 @@ class AIScoring:
             if not self.sentence_model:
                 return 50  # Default score if model not loaded
 
+            # Truncate texts to avoid memory issues
+            resume_text = resume_text[:2000]  # First 2000 characters
+            job_description = job_description[:2000]
+
             # Create embeddings
             resume_embedding = self.sentence_model.encode([resume_text])
             job_embedding = self.sentence_model.encode([job_description])
@@ -640,7 +657,7 @@ class AIScoring:
             return semantic_score
 
         except Exception as e:
-            print(f"Error in semantic similarity calculation: {e}")
+            logger.error(f"Error in semantic similarity calculation: {e}")
             return 50  # Default score
 
     def calculate_overall_score(self, parsed_resume, job_posting):
@@ -703,7 +720,7 @@ class AIScoring:
             return detailed_scores
 
         except Exception as e:
-            print(f"Error calculating overall score: {e}")
+            logger.error(f"Error calculating overall score: {e}")
             return {
                 'overall_score': 0,
                 'error': str(e),
@@ -815,6 +832,7 @@ def create_job():
         })
 
     except Exception as e:
+        logger.error(f"Error creating job: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/upload-resumes', methods=['POST'])
@@ -861,6 +879,7 @@ def upload_resumes():
                     })
 
             except Exception as e:
+                logger.error(f"Error processing {file.filename}: {e}")
                 results.append({
                     'filename': file.filename,
                     'status': 'error',
@@ -876,6 +895,7 @@ def upload_resumes():
         })
 
     except Exception as e:
+        logger.error(f"Error uploading resumes: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/analyze-resumes', methods=['POST'])
@@ -899,7 +919,7 @@ def analyze_resumes():
                     score_result = ai_scorer.calculate_overall_score(resume, current_job)
                     scored_candidates.append(score_result)
                 except Exception as e:
-                    print(f"Error scoring {resume['filename']}: {e}")
+                    logger.error(f"Error scoring {resume['filename']}: {e}")
 
         # Sort by overall score (descending)
         scored_candidates.sort(key=lambda x: x.get('overall_score', 0), reverse=True)
@@ -917,6 +937,7 @@ def analyze_resumes():
         })
 
     except Exception as e:
+        logger.error(f"Error analyzing resumes: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/get-results', methods=['GET'])
@@ -953,6 +974,7 @@ def get_results():
         })
 
     except Exception as e:
+        logger.error(f"Error getting results: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/candidate/<int:index>', methods=['GET'])
@@ -981,6 +1003,7 @@ def get_candidate_details(index):
         return jsonify(result)
 
     except Exception as e:
+        logger.error(f"Error getting candidate details: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/job-info', methods=['GET'])
@@ -996,6 +1019,7 @@ def get_job_info():
         })
 
     except Exception as e:
+        logger.error(f"Error getting job info: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/reset', methods=['POST'])
@@ -1014,6 +1038,7 @@ def reset_system():
         })
 
     except Exception as e:
+        logger.error(f"Error resetting system: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/health', methods=['GET'])
@@ -1030,4 +1055,5 @@ def health_check():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    debug_mode = os.environ.get('FLASK_ENV') == 'development'
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
