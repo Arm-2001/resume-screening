@@ -17,7 +17,6 @@ from docx import Document
 
 # NLP and ML
 from sentence_transformers import SentenceTransformer
-import spacy
 from sklearn.metrics.pairwise import cosine_similarity
 
 app = Flask(__name__)
@@ -25,14 +24,12 @@ CORS(app)  # Enable CORS for all routes
 
 # Global variables for models
 sentence_model = None
-nlp_model = None
 
 def load_models():
     """Load AI models on startup"""
-    global sentence_model, nlp_model
+    global sentence_model
     try:
         sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-        nlp_model = spacy.load("en_core_web_sm")
         return True
     except Exception as e:
         print(f"Error loading models: {e}")
@@ -353,7 +350,7 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
-        'models_loaded': sentence_model is not None and nlp_model is not None
+        'models_loaded': sentence_model is not None
     })
 
 @app.route('/create-job', methods=['POST'])
