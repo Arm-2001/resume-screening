@@ -3,17 +3,15 @@ Flask-CORS==3.0.10
 PyPDF2==3.0.1
 python-docx==0.8.11
 gunicorn==20.1.0
-scikit-learn==1.2.2
 requests==2.28.2
 
-# Lightweight alternatives
-sentence-transformers==2.1.0
-torch==1.13.1+cpu --find-links https://download.pytorch.org/whl/torch_stable.html
-numpy==1.21.6
-pandas==1.5.3
-
-# Core dependencies only
+# Core dependencies
 Werkzeug==2.2.3
 Jinja2==3.1.2
 MarkupSafe==2.1.2
 click==8.0.4
+
+# Optional: Add back ML dependencies if needed later
+# torch==1.13.1
+# scikit-learn==1.2.2
+# sentence-transformers==2.1.0
